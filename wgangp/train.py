@@ -1,97 +1,84 @@
 import tensorflow as tf
-import numpy as np
-from data import *
 from model import *
-from util import *
+from data import *
 from loss import *
 import os
 
+def train_step_gen():
+	with tf.GradientTape() as tape:
+		z = tf.random.normal([BATCH_SIZE, NOISE_DIM])
+		#z = tf.random.uniform([BATCH_SIZE, NOISE_DIM], -1.0, 1.0)
+		fake_sample = generator(z)
+		fake_score = discriminator(fake_sample)
+		loss = generator_loss(fake_score)
+	gradients = tape.gradient(loss, generator.trainable_variables)
+	generator_optimizer.apply_gradients(zip(gradients, generator.trainable_variables))
+	return loss
 
-@tf.function
-def train_step(images, step):
-    noise = tf.random.normal([BATCH_SIZE, NOISE_DIM])
+def train_step_dis(real_sample):
+	with tf.GradientTape() as tape:
+		z = tf.random.normal([BATCH_SIZE, NOISE_DIM])
+		#z = tf.random.uniform([BATCH_SIZE, NOISE_DIM], -1.0, 1.0)
+		fake_sample = generator(z)
+		real_score = discriminator(real_sample)
+		fake_score = discriminator(fake_sample)
+		loss = discriminator_loss(real_score, fake_score)
 
-    with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
-        generated_images = generator(noise, training=True)
-
-        real_output = discriminator(images, training=True)
-        fake_output = discriminator(generated_images, training=True)
-
-        gen_loss = generator_loss(fake_output)
-        disc_loss = discriminator_loss(real_output, fake_output)
-
-        if step % 5 == 0:
-            gp = gradient_penalty(discriminator, images, generated_images)
-
-    gradients_of_generator = gen_tape.gradient(gen_loss, generator.trainable_variables)
-    gradients_of_discriminator = disc_tape.gradient(disc_loss, discriminator.trainable_variables)
-
-    generator_optimizer.apply_gradients(zip(gradients_of_generator, generator.trainable_variables))
-    discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator.trainable_variables))
-
-    return gen_loss, disc_loss
-
-
-def gradient_penalty(discriminator, images, generated_images):
-    alpha = tf.random.uniform([], minval=0., maxval=1.)
-    interpolated_images = alpha * images + (1 - alpha) * generated_images
-    print('interpolated_images', interpolated_images.shape)
-    with tf.GradientTape() as disc_tape:
-        disc_tape.watch(interpolated_images)
-        interpolated_output = discriminator(interpolated_images)
-    print('interpolated_output', interpolated_output.shape)
-    gradients = disc_tape.gradient(interpolated_output, [interpolated_images])[0]
-    print('gradients', gradients.shape)
-    slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), axis=[1, 2, 3]))
-    print('slopes', slopes.shape)
-    gp = tf.reduce_mean((slopes - 1.) ** 2)
-    return gp
-
+		alpha = tf.random.uniform([BATCH_SIZE, 1, 1, 1], 0.0, 1.0)
+		inter_sample = fake_sample * alpha + real_sample * (1 - alpha)
+		with tf.GradientTape() as tape_gp:
+			tape_gp.watch(inter_sample)
+			inter_score = discriminator(inter_sample)
+		gp_gradients = tape_gp.gradient(inter_score, inter_sample)
+		gp_gradients_norm = tf.sqrt(tf.reduce_sum(tf.square(gp_gradients), axis = [1, 2, 3]))
+		gp = tf.reduce_mean((gp_gradients_norm - 1.0) ** 2)
+		loss += gp * 10.
+	gradients = tape.gradient(loss, discriminator.trainable_variables)
+	discriminator_optimizer.apply_gradients(zip(gradients, discriminator.trainable_variables))
+	return loss
 
 if __name__ == '__main__':
 
-    EPOCH = 100
-    BUFFER_SIZE = 10000
-    BATCH_SIZE = 16
-    NOISE_DIM = 100
+	EPOCH = 100
+	BUFFER_SIZE = 5000
+	BATCH_SIZE = 16
+	NOISE_DIM = 100
+	CKPT_DIR = 'ckpts'
+	LOG_DIR = 'logs'
 
-    CKPT_DIR = 'ckpts'
-    IMG_DIR = 'images'
-    LOG_DIR = 'logs'
+	train_images = make_celeba_dataset()
+	dataset = train_images.shuffle(BUFFER_SIZE).batch(BATCH_SIZE)
 
+	generator = Generator(NOISE_DIM)
+	discriminator = Discriminator()
 
-    train_images = make_celeba_dataset()
-    dataset = train_images.shuffle(BUFFER_SIZE).batch(BATCH_SIZE)
+	generator_optimizer = tf.keras.optimizers.Adam(1e-5)
+	discriminator_optimizer = tf.keras.optimizers.Adam(1e-5)
 
-    generator = Generator(NOISE_DIM)
-    discriminator = Discriminator()
+	ckpt_prefix = os.path.join(CKPT_DIR, "ckpt")
+	checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
+	discriminator_optimizer=discriminator_optimizer,
+	generator=generator,
+	discriminator=discriminator)
 
-    generator_optimizer = tf.keras.optimizers.Adam(1e-4)
-    discriminator_optimizer = tf.keras.optimizers.Adam(1e-4)
+	train_summary_writer = tf.summary.create_file_writer(LOG_DIR)
 
-    ckpt_prefix = os.path.join(CKPT_DIR, "ckpt")
-    checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
-                                     discriminator_optimizer=discriminator_optimizer,
-                                     generator=generator,
-                                     discriminator=discriminator)
+	#z = tf.random.uniform([BATCH_SIZE, NOISE_DIM], -1.0, 1.0)
+	z = tf.random.normal([BATCH_SIZE, NOISE_DIM])
+	cnt = 0
+	for epoch in range(EPOCH):
+		fake_sample = generator(z)
+		with train_summary_writer.as_default():
+			tf.summary.image("generated_image", fake_sample, step=cnt, max_outputs=9)
 
-    train_summary_writer = tf.summary.create_file_writer(LOG_DIR)
+		for batch in dataset:
+			cnt += 1
+			for _ in range(5):
+				dis_loss = train_step_dis(batch)
 
-    step = 0
-    seed = tf.random.normal([BATCH_SIZE, NOISE_DIM])
-    for epoch in range(EPOCH):
-        print('Epoch', epoch)
-        for image_batch in dataset:
-            step += 1
-            gen_loss, disc_loss = train_step(image_batch, step)
-            with train_summary_writer.as_default():
-                tf.summary.scalar('gen_loss', gen_loss, step=step)
-                tf.summary.scalar('disc_loss', disc_loss, step=step)
-
-        #generate_and_save_images(IMG_DIR, generator, epoch + 1, seed)
-        generated = generate_images(generator, seed)
-        with train_summary_writer.as_default():
-            tf.summary.image("generated_image", generated, step=step, max_outputs=16)
-
-        if (epoch + 1) % 20 == 0:
-          checkpoint.save(file_prefix = ckpt_prefix)
+			gen_loss = train_step_gen()
+			template = 'Epoch {}, Gen Loss: {}, Dis Loss: {}'
+			print (template.format(epoch + 1, gen_loss, dis_loss))
+			with train_summary_writer.as_default():
+				tf.summary.scalar('generator_loss', gen_loss, step=cnt)
+				tf.summary.scalar('discriminator_loss', dis_loss, step=cnt)

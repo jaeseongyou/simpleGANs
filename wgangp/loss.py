@@ -8,4 +8,5 @@ def discriminator_loss(real_output, fake_output):
     return total_loss
 
 def generator_loss(fake_output):
-    return -tf.reduce_mean(fake_output)
+    fake_loss = -tf.reduce_mean(fake_output)
+    return fake_loss

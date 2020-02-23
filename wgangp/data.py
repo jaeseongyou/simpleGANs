@@ -1,12 +1,6 @@
 import tensorflow as tf
 
 
-def make_tf_dataset():
-    (train_images, train_labels), (_, _) = tf.keras.datasets.fashion_mnist.load_data()
-    train_images = train_images.reshape(train_images.shape[0], 28, 28, 1)
-    train_images = tf.image.convert_image_dtype(train_images, tf.float32) * 2. - 1.
-    return train_images
-
 def _read_img(data_path):
     img = tf.io.read_file(data_path)
     img = tf.image.decode_jpeg(img, channels=3)
@@ -14,6 +8,7 @@ def _read_img(data_path):
     tf.image.central_crop(img, .4)
     img = tf.image.resize(img, [64, 64])
     return img
+
 
 def make_celeba_dataset():
     data_path = '../dataset/CelebAMask-HQ/CelebA-HQ-img/*.jpg'
